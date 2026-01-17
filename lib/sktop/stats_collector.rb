@@ -63,14 +63,47 @@ module Sktop
 
     def workers
       Sidekiq::Workers.new.map do |process_id, thread_id, work|
+        extract_worker_info(process_id, thread_id, work)
+      end
+    end
+
+    def extract_worker_info(process_id, thread_id, work)
+      # Sidekiq 7+ returns Work objects, older versions return hashes
+      if work.is_a?(Hash)
+        # Older Sidekiq - work is a hash with string keys
+        payload = work["payload"]
         {
           process_id: process_id,
           thread_id: thread_id,
           queue: work["queue"],
-          class: work["payload"]["class"],
-          args: work["payload"]["args"],
+          class: payload["class"],
+          args: payload["args"] || [],
           run_at: Time.at(work["run_at"]),
           elapsed: Time.now - Time.at(work["run_at"])
+        }
+      elsif work.respond_to?(:job)
+        # Sidekiq 7+ Work object with job accessor
+        job = work.job
+        {
+          process_id: process_id,
+          thread_id: thread_id,
+          queue: work.queue,
+          class: job["class"],
+          args: job["args"] || [],
+          run_at: Time.at(work.run_at),
+          elapsed: Time.now - Time.at(work.run_at)
+        }
+      else
+        # Fallback for other versions - try payload
+        payload = work.payload
+        {
+          process_id: process_id,
+          thread_id: thread_id,
+          queue: work.queue,
+          class: payload["class"],
+          args: payload["args"] || [],
+          run_at: Time.at(work.run_at),
+          elapsed: Time.now - Time.at(work.run_at)
         }
       end
     end

@@ -2,13 +2,13 @@
 
 Gem::Specification.new do |spec|
   spec.name          = "sktop"
-  spec.version       = "0.1.0"
+  spec.version       = "0.1.1"
   spec.authors       = ["James"]
-  spec.email         = ["james@example.com"]
+  spec.email         = ["james@ruby-code.com"]
 
   spec.summary       = "CLI tool to monitor Sidekiq queues and processes"
   spec.description   = "A terminal-based dashboard for monitoring Sidekiq, similar to the web UI but for the command line"
-  spec.homepage      = "https://github.com/james/sktop"
+  spec.homepage      = "https://github.com/jamez01/sktop"
   spec.license       = "MIT"
   spec.required_ruby_version = ">= 2.7.0"
 

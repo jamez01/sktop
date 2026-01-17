@@ -2,7 +2,7 @@
 
 module Sktop
   class Display
-    attr_accessor :current_view
+    attr_accessor :current_view, :connection_status, :last_update
 
     def initialize
       @pastel = Pastel.new
@@ -13,6 +13,8 @@ module Sktop
       @selected_index = Hash.new(0)  # Track selected row per view
       @status_message = nil
       @status_time = nil
+      @connection_status = :connecting  # :connecting, :connected, :updating, :error
+      @last_update = nil
     end
 
     def scroll_up
@@ -114,9 +116,22 @@ module Sktop
     end
 
     def render_refresh_from_cache(data)
+      @connection_status = :connected
+      @last_update = Time.now
       cached = CachedData.new(data)
       content = build_output(cached)
       render_with_overwrite(content)
+    end
+
+    def render_loading
+      lines = []
+      lines << header_bar
+      lines << ""
+      lines << @pastel.cyan("  Connecting to Redis...")
+      lines << ""
+      lines << @pastel.dim("  Waiting for data...")
+      lines << :footer
+      render_with_overwrite(lines)
     end
 
     # Simple wrapper to make cached hash act like collector
@@ -370,15 +385,47 @@ module Sktop
       timestamp = Time.now.strftime("%H:%M:%S")
       title = "sktop"
 
+      # Connection status indicator
+      status_text = case @connection_status
+                    when :connecting
+                      @pastel.yellow.on_blue(" ● Connecting ")
+                    when :updating
+                      @pastel.cyan.on_blue(" ↻ Updating ")
+                    when :error
+                      @pastel.red.on_blue(" ✗ Error ")
+                    else # :connected
+                      if @last_update
+                        age = Time.now - @last_update
+                        if age < 5
+                          @pastel.green.on_blue(" ● Connected ")
+                        else
+                          @pastel.green.on_blue(" ● #{format_update_age(age)} ago ")
+                        end
+                      else
+                        @pastel.green.on_blue(" ● Connected ")
+                      end
+                    end
+
       left = @pastel.white.on_blue.bold(" #{title} ")
       right = @pastel.white.on_blue.bold(" #{timestamp} ")
 
       left_len = visible_string_length(left)
+      status_len = visible_string_length(status_text)
       right_len = visible_string_length(right)
-      middle_width = width - left_len - right_len
-      middle = @pastel.on_blue(" " * middle_width)
+      middle_width = width - left_len - status_len - right_len
+      middle = @pastel.on_blue(" " * [middle_width, 0].max)
 
-      left + middle + right
+      left + status_text + middle + right
+    end
+
+    def format_update_age(seconds)
+      if seconds < 60
+        "#{seconds.round}s"
+      elsif seconds < 3600
+        "#{(seconds / 60).round}m"
+      else
+        "#{(seconds / 3600).round}h"
+      end
     end
 
     def section_bar(title)

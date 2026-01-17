@@ -164,6 +164,10 @@ module Sktop
       # Set up signal handler for Ctrl+C (works even when blocked)
       Signal.trap("INT") { @running = false }
 
+      # Render loading screen immediately
+      @display.connection_status = :connecting
+      @display.render_loading
+
       # Start background thread for data fetching
       fetch_thread = Thread.new do
         while @running
@@ -179,6 +183,7 @@ module Sktop
           next unless can_fetch
 
           begin
+            @display.connection_status = :updating
             collector.refresh!
             # Cache a snapshot of the data
             snapshot = {
@@ -194,8 +199,10 @@ module Sktop
               @cached_data = snapshot
               @data_version += 1
             end
+            @display.connection_status = :connected
           rescue => e
-            # Ignore fetch errors, will retry next interval
+            @display.connection_status = :error
+            # Will retry next interval
           ensure
             @fetch_mutex.synchronize { @fetch_in_progress = false }
           end
@@ -211,13 +218,7 @@ module Sktop
       begin
         # Set up raw mode for keyboard input
         STDIN.raw do |stdin|
-          # Wait for initial data (with timeout)
-          10.times do
-            break if @data_mutex.synchronize { @cached_data }
-            sleep 0.1
-          end
-
-          # Initial render
+          # Initial render (will show loading or data if already fetched)
           render_cached_data
 
           while @running
@@ -258,9 +259,11 @@ module Sktop
 
     def render_cached_data
       data = @data_mutex.synchronize { @cached_data }
-      return unless data
-
-      @display.render_refresh_from_cache(data)
+      if data
+        @display.render_refresh_from_cache(data)
+      else
+        @display.render_loading
+      end
     end
 
     def handle_keypress(key, stdin)

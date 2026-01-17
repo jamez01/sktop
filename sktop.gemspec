@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description   = "A terminal-based dashboard for monitoring Sidekiq, similar to the web UI but for the command line"
   spec.homepage      = "https://github.com/jamez01/sktop"
   spec.license       = "MIT"
-  spec.required_ruby_version = ">= 2.7.0"
+  spec.required_ruby_version = ">= 3.2.0"
 
   spec.files         = Dir["lib/**/*", "bin/*", "README.md", "LICENSE"]
   spec.bindir        = "bin"

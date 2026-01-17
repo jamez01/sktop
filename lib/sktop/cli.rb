@@ -1,0 +1,501 @@
+# frozen_string_literal: true
+
+require "optparse"
+require "redis"
+require "redis-namespace"
+require "io/console"
+require "io/wait"
+
+module Sktop
+  class CLI
+    def initialize(args = ARGV)
+      @args = args
+      @options = {
+        redis_url: ENV["REDIS_URL"] || "redis://localhost:6379/0",
+        namespace: ENV["SIDEKIQ_NAMESPACE"],
+        refresh_interval: 2,
+        initial_view: :main,
+        once: false
+      }
+      @running = true
+    end
+
+    def run
+      parse_options!
+      configure_redis
+      start_watcher
+    rescue Interrupt
+      shutdown
+    rescue RedisClient::CannotConnectError, Redis::CannotConnectError => e
+      shutdown
+      puts "Error: Cannot connect to Redis at #{@options[:redis_url]}"
+      puts "Make sure Redis is running and the URL is correct."
+      puts "You can specify a different URL with: sktop -r redis://host:port/db"
+      exit 1
+    rescue StandardError => e
+      shutdown
+      puts "Error: #{e.message}"
+      puts e.backtrace.first(5).join("\n") if ENV["DEBUG"]
+      exit 1
+    end
+
+    def shutdown
+      @running = false
+      print "\e[?25h"    # Show cursor
+      print "\e[?1049l"  # Restore main screen
+      $stdout.flush
+    end
+
+    private
+
+    def parse_options!
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: sktop [options]"
+        opts.separator ""
+        opts.separator "Options:"
+
+        opts.on("-r", "--redis URL", "Redis URL (default: redis://localhost:6379/0)") do |url|
+          @options[:redis_url] = url
+        end
+
+        opts.on("-n", "--namespace NS", "Redis namespace (e.g., 'myapp')") do |ns|
+          @options[:namespace] = ns
+        end
+
+        opts.on("-i", "--interval SECONDS", Integer, "Refresh interval in seconds (default: 2)") do |interval|
+          @options[:refresh_interval] = interval
+        end
+
+        opts.separator ""
+        opts.separator "Views (set initial view):"
+
+        opts.on("-m", "--main", "Main view (default)") do
+          @options[:initial_view] = :main
+        end
+
+        opts.on("-q", "--queues", "Queues view") do
+          @options[:initial_view] = :queues
+        end
+
+        opts.on("-p", "--processes", "Processes view") do
+          @options[:initial_view] = :processes
+        end
+
+        opts.on("-w", "--workers", "Workers view") do
+          @options[:initial_view] = :workers
+        end
+
+        opts.on("-R", "--retries", "Retries view") do
+          @options[:initial_view] = :retries
+        end
+
+        opts.on("-s", "--scheduled", "Scheduled jobs view") do
+          @options[:initial_view] = :scheduled
+        end
+
+        opts.on("-d", "--dead", "Dead jobs view") do
+          @options[:initial_view] = :dead
+        end
+
+        opts.separator ""
+
+        opts.on("-1", "--once", "Display once and exit (no auto-refresh)") do
+          @options[:once] = true
+        end
+
+        opts.on("-v", "--version", "Show version") do
+          puts "sktop #{Sktop::VERSION}"
+          exit 0
+        end
+
+        opts.on("-h", "--help", "Show this help") do
+          puts opts
+          exit 0
+        end
+      end
+
+      parser.parse!(@args)
+    end
+
+    def configure_redis
+      Sidekiq.configure_client do |config|
+        if @options[:namespace]
+          config.redis = {
+            url: @options[:redis_url],
+            namespace: @options[:namespace]
+          }
+        else
+          config.redis = { url: @options[:redis_url] }
+        end
+      end
+    end
+
+    def start_watcher
+      collector = StatsCollector.new
+      @display = Display.new
+      @display.current_view = @options[:initial_view]
+
+      if @options[:once]
+        # One-shot mode: just print and exit
+        puts @display.render(collector)
+        return
+      end
+
+      # Auto-refresh mode with keyboard input
+      $stdout.sync = true
+
+      # Get terminal size before entering raw mode
+      @display.update_terminal_size
+
+      # Switch to alternate screen buffer (like htop/vim)
+      print "\e[?1049h"  # Enable alternate screen
+      print "\e[?25l"    # Hide cursor
+      print "\e[2J"      # Clear screen
+      $stdout.flush
+
+      # Thread-safe data cache
+      @cached_data = nil
+      @data_version = 0
+      @rendered_version = 0
+      @data_mutex = Mutex.new
+      @fetch_in_progress = false
+      @fetch_mutex = Mutex.new
+
+      # Set up signal handler for Ctrl+C (works even when blocked)
+      Signal.trap("INT") { @running = false }
+
+      # Start background thread for data fetching
+      fetch_thread = Thread.new do
+        while @running
+          # Skip if a fetch is already in progress (defensive guard)
+          can_fetch = @fetch_mutex.synchronize do
+            if @fetch_in_progress
+              false
+            else
+              @fetch_in_progress = true
+            end
+          end
+
+          next unless can_fetch
+
+          begin
+            collector.refresh!
+            # Cache a snapshot of the data
+            snapshot = {
+              overview: collector.overview,
+              queues: collector.queues,
+              processes: collector.processes,
+              workers: collector.workers,
+              retry_jobs: collector.retry_jobs(limit: 500),
+              scheduled_jobs: collector.scheduled_jobs(limit: 500),
+              dead_jobs: collector.dead_jobs(limit: 500)
+            }
+            @data_mutex.synchronize do
+              @cached_data = snapshot
+              @data_version += 1
+            end
+          rescue => e
+            # Ignore fetch errors, will retry next interval
+          ensure
+            @fetch_mutex.synchronize { @fetch_in_progress = false }
+          end
+
+          # Sleep in small increments so we can exit quickly
+          (@options[:refresh_interval] * 10).to_i.times do
+            break unless @running
+            sleep 0.1
+          end
+        end
+      end
+
+      begin
+        # Set up raw mode for keyboard input
+        STDIN.raw do |stdin|
+          # Wait for initial data (with timeout)
+          10.times do
+            break if @data_mutex.synchronize { @cached_data }
+            sleep 0.1
+          end
+
+          # Initial render
+          render_cached_data
+
+          while @running
+            # Wait for keyboard input with short timeout
+            ready = IO.select([stdin], nil, nil, 0.03)
+
+            if ready
+              key = stdin.read_nonblock(1) rescue nil
+              if key
+                handle_keypress(key, stdin)
+                # Immediate refresh on keypress
+                render_cached_data
+              end
+            end
+
+            # Check if background thread has new data
+            current_version = @data_mutex.synchronize { @data_version }
+            if current_version != @rendered_version
+              @rendered_version = current_version
+              render_cached_data
+            end
+          end
+        end
+      ensure
+        # Stop fetch thread
+        @running = false
+        fetch_thread.join(0.5) rescue nil
+
+        # Restore normal screen
+        print "\e[?25h"    # Show cursor
+        print "\e[?1049l"  # Disable alternate screen
+        $stdout.flush
+
+        # Reset signal handler
+        Signal.trap("INT", "DEFAULT")
+      end
+    end
+
+    def render_cached_data
+      data = @data_mutex.synchronize { @cached_data }
+      return unless data
+
+      @display.render_refresh_from_cache(data)
+    end
+
+    def handle_keypress(key, stdin)
+      case key
+      when 'q', 'Q'
+        @display.current_view = :queues
+      when 'p', 'P'
+        @display.current_view = :processes
+      when 'w', 'W'
+        @display.current_view = :workers
+      when 'r', 'R'  # Retries view
+        @display.current_view = :retries
+      when 's', 'S'
+        @display.current_view = :scheduled
+      when 'd', 'D'
+        @display.current_view = :dead
+      when 'm', 'M'
+        @display.current_view = :main
+      when "\x12"  # Ctrl+R - retry job
+        handle_retry_action
+      when "\x18"  # Ctrl+X - delete job
+        handle_delete_action
+      when "\x11"  # Ctrl+Q - quiet process
+        handle_quiet_process_action
+      when "\x0B"  # Ctrl+K - stop/kill process
+        handle_stop_process_action
+      when "\e"  # Escape sequence - could be arrow keys, Alt+key, or just Escape
+        # Try to read more characters (arrow keys send \e[A, \e[B, etc.)
+        if IO.select([stdin], nil, nil, 0.05)
+          seq = stdin.read_nonblock(10) rescue ""
+          case seq
+          when "[A"  # Up arrow
+            @display.select_up
+          when "[B"  # Down arrow
+            @display.select_down
+          when "[C"  # Right arrow (unused for now)
+          when "[D"  # Left arrow (unused for now)
+          when "[5~"  # Page Up
+            @display.page_up
+          when "[6~"  # Page Down
+            @display.page_down
+          when "r", "R"  # Alt+R - Retry All
+            handle_retry_all_action
+          when "x", "X"  # Alt+X - Delete All
+            handle_delete_all_action
+          else
+            # Just Escape key - go to main
+            @display.current_view = :main
+          end
+        else
+          # Just Escape key - go to main
+          @display.current_view = :main
+        end
+      when "\u0003"  # Ctrl+C
+        raise Interrupt
+      end
+    end
+
+    def handle_retry_action
+      return unless [:retries, :dead].include?(@display.current_view)
+
+      data = @data_mutex.synchronize { @cached_data }
+      unless data
+        @display.set_status("No data available")
+        return
+      end
+
+      jobs = @display.current_view == :retries ? data[:retry_jobs] : data[:dead_jobs]
+      selected_idx = @display.selected_index
+
+      if jobs.empty?
+        @display.set_status("No jobs to retry")
+        return
+      end
+
+      if selected_idx >= jobs.length
+        @display.set_status("Invalid selection")
+        return
+      end
+
+      job = jobs[selected_idx]
+      unless job[:jid]
+        @display.set_status("Job has no JID")
+        return
+      end
+
+      begin
+        source = @display.current_view == :retries ? :retry : :dead
+        Sktop::JobActions.retry_job(job[:jid], source)
+        @display.set_status("Retrying #{job[:class]}")
+        # Force data refresh
+        @rendered_version = -1
+      rescue => e
+        @display.set_status("Error: #{e.message}")
+      end
+    end
+
+    def handle_delete_action
+      return unless [:retries, :dead].include?(@display.current_view)
+
+      data = @data_mutex.synchronize { @cached_data }
+      unless data
+        @display.set_status("No data available")
+        return
+      end
+
+      jobs = @display.current_view == :retries ? data[:retry_jobs] : data[:dead_jobs]
+      selected_idx = @display.selected_index
+
+      if jobs.empty?
+        @display.set_status("No jobs to delete")
+        return
+      end
+
+      if selected_idx >= jobs.length
+        @display.set_status("Invalid selection")
+        return
+      end
+
+      job = jobs[selected_idx]
+      unless job[:jid]
+        @display.set_status("Job has no JID")
+        return
+      end
+
+      begin
+        source = @display.current_view == :retries ? :retry : :dead
+        Sktop::JobActions.delete_job(job[:jid], source)
+        @display.set_status("Deleted #{job[:class]}")
+        # Force data refresh
+        @rendered_version = -1
+      rescue => e
+        @display.set_status("Error: #{e.message}")
+      end
+    end
+
+    def handle_retry_all_action
+      return unless [:retries, :dead].include?(@display.current_view)
+
+      begin
+        source = @display.current_view == :retries ? :retry : :dead
+        count = Sktop::JobActions.retry_all(source)
+        @display.set_status("Retrying all #{count} jobs")
+        @rendered_version = -1
+      rescue => e
+        @display.set_status("Error: #{e.message}")
+      end
+    end
+
+    def handle_delete_all_action
+      return unless [:retries, :dead].include?(@display.current_view)
+
+      begin
+        source = @display.current_view == :retries ? :retry : :dead
+        count = Sktop::JobActions.delete_all(source)
+        @display.set_status("Deleted all #{count} jobs")
+        @rendered_version = -1
+      rescue => e
+        @display.set_status("Error: #{e.message}")
+      end
+    end
+
+    def handle_quiet_process_action
+      return unless @display.current_view == :processes
+
+      data = @data_mutex.synchronize { @cached_data }
+      unless data
+        @display.set_status("No data available")
+        return
+      end
+
+      processes = data[:processes]
+      selected_idx = @display.selected_index
+
+      if processes.empty?
+        @display.set_status("No processes")
+        return
+      end
+
+      if selected_idx >= processes.length
+        @display.set_status("Invalid selection")
+        return
+      end
+
+      process = processes[selected_idx]
+      unless process[:identity]
+        @display.set_status("Process has no identity")
+        return
+      end
+
+      begin
+        Sktop::JobActions.quiet_process(process[:identity])
+        @display.set_status("Quieting #{process[:hostname]}:#{process[:pid]}")
+        @rendered_version = -1
+      rescue => e
+        @display.set_status("Error: #{e.message}")
+      end
+    end
+
+    def handle_stop_process_action
+      return unless @display.current_view == :processes
+
+      data = @data_mutex.synchronize { @cached_data }
+      unless data
+        @display.set_status("No data available")
+        return
+      end
+
+      processes = data[:processes]
+      selected_idx = @display.selected_index
+
+      if processes.empty?
+        @display.set_status("No processes")
+        return
+      end
+
+      if selected_idx >= processes.length
+        @display.set_status("Invalid selection")
+        return
+      end
+
+      process = processes[selected_idx]
+      unless process[:identity]
+        @display.set_status("Process has no identity")
+        return
+      end
+
+      begin
+        Sktop::JobActions.stop_process(process[:identity])
+        @display.set_status("Stopping #{process[:hostname]}:#{process[:pid]}")
+        @rendered_version = -1
+      rescue => e
+        @display.set_status("Error: #{e.message}")
+      end
+    end
+
+  end
+end

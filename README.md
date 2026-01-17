@@ -2,6 +2,8 @@
 
 A CLI tool to monitor Sidekiq queues and processes - like htop for Sidekiq.
 
+![sktop main view](screenshots/sktop-main.png)
+
 ## Installation
 
 Add to your Gemfile:

@@ -7,7 +7,18 @@ require "io/console"
 require "io/wait"
 
 module Sktop
+  # Command-line interface for the Sktop Sidekiq monitor.
+  # Handles argument parsing, Redis configuration, and the main event loop.
+  #
+  # @example Basic usage
+  #   Sktop::CLI.new.run
+  #
+  # @example With custom arguments
+  #   Sktop::CLI.new(["-r", "redis://myhost:6379/1", "-q"]).run
   class CLI
+    # Create a new CLI instance.
+    #
+    # @param args [Array<String>] command-line arguments (defaults to ARGV)
     def initialize(args = ARGV)
       @args = args
       @options = {
@@ -20,6 +31,11 @@ module Sktop
       @running = true
     end
 
+    # Run the CLI application.
+    # Parses options, configures Redis, and starts the TUI.
+    #
+    # @return [void]
+    # @raise [SystemExit] on connection errors or interrupts
     def run
       parse_options!
       configure_redis
@@ -39,6 +55,10 @@ module Sktop
       exit 1
     end
 
+    # Gracefully shutdown the application.
+    # Restores terminal state and shows the cursor.
+    #
+    # @return [void]
     def shutdown
       @running = false
       print "\e[?25h"    # Show cursor
@@ -48,6 +68,9 @@ module Sktop
 
     private
 
+    # Parse command-line options and populate @options hash.
+    # @return [void]
+    # @api private
     def parse_options!
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: sktop [options]"
@@ -117,6 +140,9 @@ module Sktop
       parser.parse!(@args)
     end
 
+    # Configure Sidekiq's Redis connection from CLI options.
+    # @return [void]
+    # @api private
     def configure_redis
       Sidekiq.configure_client do |config|
         if @options[:namespace]
@@ -130,6 +156,10 @@ module Sktop
       end
     end
 
+    # Start the main TUI loop with background data fetching.
+    # Handles both one-shot mode and interactive auto-refresh mode.
+    # @return [void]
+    # @api private
     def start_watcher
       collector = StatsCollector.new
       @display = Display.new
@@ -267,6 +297,10 @@ module Sktop
       end
     end
 
+    # Render the display from the cached data snapshot.
+    # Shows loading screen if no data is available yet.
+    # @return [void]
+    # @api private
     def render_cached_data
       data = @data_mutex.synchronize { @cached_data }
       if data
@@ -276,6 +310,13 @@ module Sktop
       end
     end
 
+    # Handle a keyboard input event.
+    # Routes to appropriate view or action handler.
+    #
+    # @param key [String] the key character pressed
+    # @param stdin [IO] the stdin IO object for reading escape sequences
+    # @return [void]
+    # @api private
     def handle_keypress(key, stdin)
       case key
       when 'q', 'Q'
@@ -336,6 +377,10 @@ module Sktop
       end
     end
 
+    # Handle Ctrl+R to retry the selected job.
+    # Only works in retries and dead views.
+    # @return [void]
+    # @api private
     def handle_retry_action
       return unless [:retries, :dead].include?(@display.current_view)
 
@@ -375,6 +420,10 @@ module Sktop
       end
     end
 
+    # Handle Ctrl+X to delete the selected job.
+    # Works in retries, dead, and queue_jobs views.
+    # @return [void]
+    # @api private
     def handle_delete_action
       # Handle queue_jobs view separately
       if @display.current_view == :queue_jobs
@@ -420,6 +469,10 @@ module Sktop
       end
     end
 
+    # Handle Alt+R to retry all jobs in the current view.
+    # Only works in retries and dead views.
+    # @return [void]
+    # @api private
     def handle_retry_all_action
       return unless [:retries, :dead].include?(@display.current_view)
 
@@ -433,6 +486,10 @@ module Sktop
       end
     end
 
+    # Handle Alt+X to delete all jobs in the current view.
+    # Only works in retries and dead views.
+    # @return [void]
+    # @api private
     def handle_delete_all_action
       return unless [:retries, :dead].include?(@display.current_view)
 
@@ -446,6 +503,10 @@ module Sktop
       end
     end
 
+    # Handle Ctrl+Q to quiet the selected Sidekiq process.
+    # Only works in processes view.
+    # @return [void]
+    # @api private
     def handle_quiet_process_action
       return unless @display.current_view == :processes
 
@@ -483,6 +544,10 @@ module Sktop
       end
     end
 
+    # Handle Ctrl+K to stop/kill the selected Sidekiq process.
+    # Only works in processes view.
+    # @return [void]
+    # @api private
     def handle_stop_process_action
       return unless @display.current_view == :processes
 
@@ -520,6 +585,10 @@ module Sktop
       end
     end
 
+    # Handle Enter key to view jobs in the selected queue.
+    # Only works in queues view.
+    # @return [void]
+    # @api private
     def handle_enter_action
       return unless @display.current_view == :queues
 
@@ -563,6 +632,10 @@ module Sktop
       end
     end
 
+    # Handle Escape key to go back or return to main view.
+    # From queue_jobs returns to queues, otherwise returns to main.
+    # @return [void]
+    # @api private
     def handle_escape_action
       if @display.current_view == :queue_jobs
         # Go back to queues view
@@ -574,6 +647,10 @@ module Sktop
       end
     end
 
+    # Handle Ctrl+X to delete a job from the current queue.
+    # Only works in queue_jobs view.
+    # @return [void]
+    # @api private
     def handle_delete_queue_job_action
       return unless @display.current_view == :queue_jobs
 

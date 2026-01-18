@@ -1,9 +1,24 @@
 # frozen_string_literal: true
 
 module Sktop
+  # Handles all terminal display rendering for the Sktop TUI.
+  # Manages views, scrolling, selection, and ANSI-colored output.
+  #
+  # @example Basic usage
+  #   display = Sktop::Display.new
+  #   display.current_view = :queues
+  #   display.render(collector)
+  #
+  # @example With cached data for auto-refresh
+  #   display = Sktop::Display.new
+  #   display.render_refresh_from_cache(data_hash)
   class Display
+    # @return [Symbol] the current view (:main, :queues, :processes, :workers, :retries, :scheduled, :dead, :queue_jobs)
+    # @return [Symbol] the connection status (:connecting, :connected, :updating, :error)
+    # @return [Time, nil] the timestamp of the last successful data update
     attr_accessor :current_view, :connection_status, :last_update
 
+    # Create a new Display instance with default settings.
     def initialize
       @pastel = Pastel.new
       @cursor = TTY::Cursor
@@ -18,16 +33,23 @@ module Sktop
       @selected_queue = nil  # Track which queue is being viewed in queue_jobs view
     end
 
+    # @return [String, nil] the name of the currently selected queue (for queue_jobs view)
     attr_accessor :selected_queue
 
+    # Scroll the current view up by one line.
+    # @return [Integer] the new scroll offset
     def scroll_up
       @scroll_offsets[@current_view] = [@scroll_offsets[@current_view] - 1, 0].max
     end
 
+    # Scroll the current view down by one line.
+    # @return [Integer] the new scroll offset
     def scroll_down
       @scroll_offsets[@current_view] += 1
     end
 
+    # Move selection up in selectable views, or scroll up in non-selectable views.
+    # @return [Integer] the new selected index or scroll offset
     def select_up
       if selectable_view?
         @selected_index[@current_view] = [@selected_index[@current_view] - 1, 0].max
@@ -36,6 +58,8 @@ module Sktop
       end
     end
 
+    # Move selection down in selectable views, or scroll down in non-selectable views.
+    # @return [Integer] the new selected index or scroll offset
     def select_down
       if selectable_view?
         @selected_index[@current_view] += 1
@@ -44,10 +68,15 @@ module Sktop
       end
     end
 
+    # Check if the current view supports item selection.
+    # @return [Boolean] true if the view supports selection
     def selectable_view?
       [:queues, :queue_jobs, :processes, :retries, :dead].include?(@current_view)
     end
 
+    # Move up by one page in the current view.
+    # @param page_size [Integer, nil] custom page size (defaults to terminal height - 8)
+    # @return [Integer] the new selected index or scroll offset
     def page_up(page_size = nil)
       page_size ||= default_page_size
       if selectable_view?
@@ -57,6 +86,9 @@ module Sktop
       end
     end
 
+    # Move down by one page in the current view.
+    # @param page_size [Integer, nil] custom page size (defaults to terminal height - 8)
+    # @return [Integer] the new selected index or scroll offset
     def page_down(page_size = nil)
       page_size ||= default_page_size
       if selectable_view?
@@ -66,51 +98,77 @@ module Sktop
       end
     end
 
+    # Calculate the default page size based on terminal height.
+    # @return [Integer] the page size (minimum 5)
     def default_page_size
       # Use terminal height minus header/footer overhead as page size
       [terminal_height - 8, 5].max
     end
 
+    # Get the currently selected index for the current view.
+    # @return [Integer] the selected index (0-based)
     def selected_index
       @selected_index[@current_view]
     end
 
+    # Set a temporary status message to display.
+    # The message will be shown for approximately 3 seconds.
+    # @param message [String] the status message to display
+    # @return [void]
     def set_status(message)
       @status_message = message
       @status_time = Time.now
     end
 
+    # Reset the scroll offset for the current view to zero.
+    # @return [Integer] 0
     def reset_scroll
       @scroll_offsets[@current_view] = 0
     end
 
+    # Set the current view, preserving scroll position.
+    # @param view [Symbol] the view to switch to
+    # @return [Symbol] the new current view
     def current_view=(view)
       @current_view = view
       # Don't reset scroll when switching views - preserve position
     end
 
+    # Ordered list of views for cycling with arrow keys.
+    # @return [Array<Symbol>] the view order
     VIEW_ORDER = [:main, :queues, :processes, :workers, :retries, :scheduled, :dead].freeze
 
+    # Switch to the next view in the cycle.
+    # @return [Symbol] the new current view
     def next_view
       current_idx = VIEW_ORDER.index(@current_view) || 0
       @current_view = VIEW_ORDER[(current_idx + 1) % VIEW_ORDER.length]
     end
 
+    # Switch to the previous view in the cycle.
+    # @return [Symbol] the new current view
     def previous_view
       current_idx = VIEW_ORDER.index(@current_view) || 0
       @current_view = VIEW_ORDER[(current_idx - 1) % VIEW_ORDER.length]
     end
 
+    # Reset cursor to top-left and hide it.
+    # @return [void]
     def reset_cursor
       print @cursor.move_to(0, 0)
       print @cursor.hide
       $stdout.flush
     end
 
+    # Show the cursor (call on exit).
+    # @return [void]
     def show_cursor
       print @cursor.show
     end
 
+    # Update the cached terminal size from TTY::Screen.
+    # Call this before entering raw mode or when terminal resizes.
+    # @return [Array<Integer>, nil] [height, width] or nil if unchanged
     def update_terminal_size
       # Force refresh of terminal size using TTY::Screen
       height = TTY::Screen.height
@@ -120,16 +178,26 @@ module Sktop
       end
     end
 
+    # Render the current view as a string (for one-shot mode).
+    # @param collector [StatsCollector, CachedData] the data source
+    # @return [String] the rendered output
     def render(collector)
       content_parts = build_output(collector)
       content_parts.reject { |p| p == :footer }.map(&:to_s).join("\n")
     end
 
+    # Render the current view directly to the terminal with screen clearing.
+    # @param collector [StatsCollector] the data source
+    # @return [void]
     def render_refresh(collector)
       content = build_output(collector)
       render_with_overwrite(content)
     end
 
+    # Render the current view from cached data hash.
+    # Updates connection status and last update time.
+    # @param data [Hash] cached data hash with :overview, :queues, :processes, etc.
+    # @return [void]
     def render_refresh_from_cache(data)
       @connection_status = :connected
       @last_update = Time.now
@@ -138,6 +206,8 @@ module Sktop
       render_with_overwrite(content)
     end
 
+    # Render a loading screen while waiting for initial data.
+    # @return [void]
     def render_loading
       lines = []
       lines << header_bar
@@ -149,40 +219,58 @@ module Sktop
       render_with_overwrite(lines)
     end
 
-    # Simple wrapper to make cached hash act like collector
+    # Wrapper class to make a cached data hash act like a StatsCollector.
+    # Provides the same interface methods that Display expects.
+    #
+    # @example
+    #   cached = CachedData.new({ overview: {...}, queues: [...] })
+    #   cached.overview  # => {...}
     class CachedData
+      # Create a new CachedData wrapper.
+      # @param data [Hash] the raw data hash
       def initialize(data)
         @data = data
       end
 
+      # @return [Hash] overview statistics
       def overview
         @data[:overview]
       end
 
+      # @return [Array<Hash>] queue information
       def queues
         @data[:queues]
       end
 
+      # @return [Array<Hash>] process information
       def processes
         @data[:processes]
       end
 
+      # @return [Array<Hash>] worker information
       def workers
         @data[:workers]
       end
 
+      # @param limit [Integer] maximum jobs to return
+      # @return [Array<Hash>] retry job information
       def retry_jobs(limit: 50)
         @data[:retry_jobs]&.first(limit) || []
       end
 
+      # @param limit [Integer] maximum jobs to return
+      # @return [Array<Hash>] scheduled job information
       def scheduled_jobs(limit: 50)
         @data[:scheduled_jobs]&.first(limit) || []
       end
 
+      # @param limit [Integer] maximum jobs to return
+      # @return [Array<Hash>] dead job information
       def dead_jobs(limit: 50)
         @data[:dead_jobs]&.first(limit) || []
       end
 
+      # @return [Array<Hash>] cached queue jobs data
       def queue_jobs_cache
         @data[:queue_jobs] || []
       end

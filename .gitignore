@@ -22,3 +22,8 @@ Thumbs.db
 # Gem build
 *.gem
 /pkg/
+
+# Docs
+/doc
+/.yardoc
+

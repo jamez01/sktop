@@ -195,7 +195,17 @@ module Sktop
               scheduled_jobs: collector.scheduled_jobs(limit: 500),
               dead_jobs: collector.dead_jobs(limit: 500)
             }
+
+            # If viewing queue jobs, refresh that data too
+            if @display.current_view == :queue_jobs && @display.selected_queue
+              snapshot[:queue_jobs] = collector.queue_jobs(@display.selected_queue, limit: 500)
+            end
+
             @data_mutex.synchronize do
+              # Preserve queue_jobs if not refreshed above but still in that view
+              if @cached_data && @cached_data[:queue_jobs] && !snapshot[:queue_jobs]
+                snapshot[:queue_jobs] = @cached_data[:queue_jobs]
+              end
               @cached_data = snapshot
               @data_version += 1
             end
@@ -282,6 +292,8 @@ module Sktop
         @display.current_view = :dead
       when 'm', 'M'
         @display.current_view = :main
+      when "\r", "\n"  # Enter key
+        handle_enter_action
       when "\x12"  # Ctrl+R - retry job
         handle_retry_action
       when "\x18"  # Ctrl+X - delete job
@@ -299,8 +311,10 @@ module Sktop
             @display.select_up
           when "[B"  # Down arrow
             @display.select_down
-          when "[C"  # Right arrow (unused for now)
-          when "[D"  # Left arrow (unused for now)
+          when "[C"  # Right arrow - next view
+            @display.next_view
+          when "[D"  # Left arrow - previous view
+            @display.previous_view
           when "[5~"  # Page Up
             @display.page_up
           when "[6~"  # Page Down
@@ -310,12 +324,12 @@ module Sktop
           when "x", "X"  # Alt+X - Delete All
             handle_delete_all_action
           else
-            # Just Escape key - go to main
-            @display.current_view = :main
+            # Just Escape key - go back or to main
+            handle_escape_action
           end
         else
-          # Just Escape key - go to main
-          @display.current_view = :main
+          # Just Escape key - go back or to main
+          handle_escape_action
         end
       when "\u0003"  # Ctrl+C
         raise Interrupt
@@ -362,6 +376,12 @@ module Sktop
     end
 
     def handle_delete_action
+      # Handle queue_jobs view separately
+      if @display.current_view == :queue_jobs
+        handle_delete_queue_job_action
+        return
+      end
+
       return unless [:retries, :dead].include?(@display.current_view)
 
       data = @data_mutex.synchronize { @cached_data }
@@ -494,6 +514,105 @@ module Sktop
       begin
         Sktop::JobActions.stop_process(process[:identity])
         @display.set_status("Stopping #{process[:hostname]}:#{process[:pid]}")
+        @rendered_version = -1
+      rescue => e
+        @display.set_status("Error: #{e.message}")
+      end
+    end
+
+    def handle_enter_action
+      return unless @display.current_view == :queues
+
+      data = @data_mutex.synchronize { @cached_data }
+      unless data
+        @display.set_status("No data available")
+        return
+      end
+
+      queues = data[:queues]
+      selected_idx = @display.selected_index
+
+      if queues.empty?
+        @display.set_status("No queues")
+        return
+      end
+
+      if selected_idx >= queues.length
+        @display.set_status("Invalid selection")
+        return
+      end
+
+      queue = queues[selected_idx]
+      queue_name = queue[:name]
+
+      # Fetch jobs from the queue
+      begin
+        collector = StatsCollector.new
+        jobs = collector.queue_jobs(queue_name, limit: 500)
+
+        # Update cached data with queue jobs
+        @data_mutex.synchronize do
+          @cached_data[:queue_jobs] = jobs
+        end
+
+        @display.selected_queue = queue_name
+        @display.current_view = :queue_jobs
+        @display.set_status("Loaded #{jobs.length} jobs from #{queue_name}")
+      rescue => e
+        @display.set_status("Error loading queue: #{e.message}")
+      end
+    end
+
+    def handle_escape_action
+      if @display.current_view == :queue_jobs
+        # Go back to queues view
+        @display.current_view = :queues
+        @display.selected_queue = nil
+      else
+        # Go to main view
+        @display.current_view = :main
+      end
+    end
+
+    def handle_delete_queue_job_action
+      return unless @display.current_view == :queue_jobs
+
+      data = @data_mutex.synchronize { @cached_data }
+      unless data
+        @display.set_status("No data available")
+        return
+      end
+
+      jobs = data[:queue_jobs] || []
+      selected_idx = @display.selected_index
+      queue_name = @display.selected_queue
+
+      if jobs.empty?
+        @display.set_status("No jobs to delete")
+        return
+      end
+
+      if selected_idx >= jobs.length
+        @display.set_status("Invalid selection")
+        return
+      end
+
+      job = jobs[selected_idx]
+      unless job[:jid]
+        @display.set_status("Job has no JID")
+        return
+      end
+
+      begin
+        Sktop::JobActions.delete_queue_job(queue_name, job[:jid])
+        @display.set_status("Deleted #{job[:class]}")
+
+        # Refresh the queue jobs
+        collector = StatsCollector.new
+        new_jobs = collector.queue_jobs(queue_name, limit: 500)
+        @data_mutex.synchronize do
+          @cached_data[:queue_jobs] = new_jobs
+        end
         @rendered_version = -1
       rescue => e
         @display.set_status("Error: #{e.message}")

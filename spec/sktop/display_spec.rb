@@ -172,13 +172,13 @@ RSpec.describe Sktop::Display do
       end
 
       context "in non-selectable view" do
-        before { display.current_view = :queues }
+        before { display.current_view = :scheduled }
 
         it "scrolls up by page size" do
           20.times { display.scroll_down }
           display.page_up
 
-          expect(display.instance_variable_get(:@scroll_offsets)[:queues]).to be < 10
+          expect(display.instance_variable_get(:@scroll_offsets)[:scheduled]).to be < 10
         end
       end
     end
@@ -225,9 +225,9 @@ RSpec.describe Sktop::Display do
       expect(display.send(:selectable_view?)).to eq(true)
     end
 
-    it "returns false for queues view" do
+    it "returns true for queues view" do
       display.current_view = :queues
-      expect(display.send(:selectable_view?)).to eq(false)
+      expect(display.send(:selectable_view?)).to eq(true)
     end
 
     it "returns false for workers view" do

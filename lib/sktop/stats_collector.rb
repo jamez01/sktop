@@ -108,6 +108,19 @@ module Sktop
       end
     end
 
+    def queue_jobs(queue_name, limit: 100)
+      queue = Sidekiq::Queue.new(queue_name)
+      queue.first(limit).map do |job|
+        {
+          jid: job.jid,
+          class: job.klass,
+          args: job.args,
+          enqueued_at: job.enqueued_at,
+          created_at: job.created_at
+        }
+      end
+    end
+
     def scheduled_jobs(limit: 10)
       Sidekiq::ScheduledSet.new.first(limit).map do |job|
         {

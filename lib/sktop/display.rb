@@ -15,7 +15,10 @@ module Sktop
       @status_time = nil
       @connection_status = :connecting  # :connecting, :connected, :updating, :error
       @last_update = nil
+      @selected_queue = nil  # Track which queue is being viewed in queue_jobs view
     end
+
+    attr_accessor :selected_queue
 
     def scroll_up
       @scroll_offsets[@current_view] = [@scroll_offsets[@current_view] - 1, 0].max
@@ -42,7 +45,7 @@ module Sktop
     end
 
     def selectable_view?
-      [:processes, :retries, :dead].include?(@current_view)
+      [:queues, :queue_jobs, :processes, :retries, :dead].include?(@current_view)
     end
 
     def page_up(page_size = nil)
@@ -84,6 +87,18 @@ module Sktop
     def current_view=(view)
       @current_view = view
       # Don't reset scroll when switching views - preserve position
+    end
+
+    VIEW_ORDER = [:main, :queues, :processes, :workers, :retries, :scheduled, :dead].freeze
+
+    def next_view
+      current_idx = VIEW_ORDER.index(@current_view) || 0
+      @current_view = VIEW_ORDER[(current_idx + 1) % VIEW_ORDER.length]
+    end
+
+    def previous_view
+      current_idx = VIEW_ORDER.index(@current_view) || 0
+      @current_view = VIEW_ORDER[(current_idx - 1) % VIEW_ORDER.length]
     end
 
     def reset_cursor
@@ -167,6 +182,10 @@ module Sktop
       def dead_jobs(limit: 50)
         @data[:dead_jobs]&.first(limit) || []
       end
+
+      def queue_jobs_cache
+        @data[:queue_jobs] || []
+      end
     end
 
     private
@@ -175,6 +194,8 @@ module Sktop
       case @current_view
       when :queues
         build_queues_detail(collector)
+      when :queue_jobs
+        build_queue_jobs_detail(collector)
       when :processes
         build_processes_detail(collector)
       when :workers
@@ -245,7 +266,18 @@ module Sktop
       lines << ""
       # Calculate available rows: height - header(1) - blank(1) - section(1) - table_header(1) - footer(1) = height - 5
       max_rows = terminal_height - 5
-      queues_scrollable(collector.queues, max_rows).each_line(chomp: true) { |l| lines << l }
+      queues_selectable(collector.queues, max_rows).each_line(chomp: true) { |l| lines << l }
+      lines << :footer
+      lines
+    end
+
+    def build_queue_jobs_detail(collector)
+      lines = []
+      lines << header_bar
+      lines << ""
+      max_rows = terminal_height - 5
+      jobs = collector.respond_to?(:queue_jobs_cache) ? collector.queue_jobs_cache : []
+      queue_jobs_selectable(jobs, max_rows).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines
     end
@@ -596,6 +628,133 @@ module Sktop
       remaining = queues.length - scroll_offset - data_rows
       if remaining > 0
         lines << @pastel.dim("  ↓ #{remaining} more")
+      end
+
+      lines.join("\n")
+    end
+
+    # Selectable queues view - press Enter to view queue contents
+    def queues_selectable(queues, max_rows)
+      width = terminal_width
+      lines = []
+
+      scroll_offset = @scroll_offsets[@current_view]
+      data_rows = max_rows - 3  # Account for section bar, header, and status line
+      max_scroll = [queues.length - data_rows, 0].max
+      scroll_offset = [[scroll_offset, 0].max, max_scroll].min
+      @scroll_offsets[@current_view] = scroll_offset
+
+      # Clamp selected index
+      @selected_index[@current_view] = [[@selected_index[@current_view], 0].max, [queues.length - 1, 0].max].min
+
+      # Auto-scroll to keep selection visible
+      selected = @selected_index[@current_view]
+      if selected < scroll_offset
+        scroll_offset = selected
+        @scroll_offsets[@current_view] = scroll_offset
+      elsif selected >= scroll_offset + data_rows
+        scroll_offset = selected - data_rows + 1
+        @scroll_offsets[@current_view] = scroll_offset
+      end
+
+      scroll_indicator = queues.length > data_rows ? " [#{scroll_offset + 1}-#{[scroll_offset + data_rows, queues.length].min}/#{queues.length}]" : ""
+      lines << section_bar("Queues#{scroll_indicator} - ↑↓ select, Enter=view jobs, m=main")
+
+      if queues.empty?
+        lines << @pastel.dim("  No queues")
+        return lines.join("\n")
+      end
+
+      name_width = [40, width - 40].max
+      header = sprintf("  %-#{name_width}s %10s %10s %10s", "NAME", "SIZE", "LATENCY", "STATUS")
+      lines << format_table_header(header)
+
+      queues.drop(scroll_offset).first(data_rows).each_with_index do |queue, idx|
+        actual_idx = scroll_offset + idx
+        row = format_queue_row(queue, name_width)
+
+        if actual_idx == selected
+          lines << @pastel.black.on_white(row + " " * [width - visible_string_length(row), 0].max)
+        else
+          lines << row
+        end
+      end
+
+      remaining = queues.length - scroll_offset - data_rows
+      if remaining > 0
+        lines << @pastel.dim("  ↓ #{remaining} more")
+      end
+
+      # Status message
+      if @status_message && @status_time && (Time.now - @status_time) < 3
+        lines << @pastel.green("  #{@status_message}")
+      end
+
+      lines.join("\n")
+    end
+
+    # Selectable queue jobs view - press Ctrl+X to delete job
+    def queue_jobs_selectable(jobs, max_rows)
+      width = terminal_width
+      lines = []
+
+      scroll_offset = @scroll_offsets[@current_view]
+      data_rows = max_rows - 3  # Account for section bar, header, and status line
+      max_scroll = [jobs.length - data_rows, 0].max
+      scroll_offset = [[scroll_offset, 0].max, max_scroll].min
+      @scroll_offsets[@current_view] = scroll_offset
+
+      # Clamp selected index
+      @selected_index[@current_view] = [[@selected_index[@current_view], 0].max, [jobs.length - 1, 0].max].min
+
+      # Auto-scroll to keep selection visible
+      selected = @selected_index[@current_view]
+      if selected < scroll_offset
+        scroll_offset = selected
+        @scroll_offsets[@current_view] = scroll_offset
+      elsif selected >= scroll_offset + data_rows
+        scroll_offset = selected - data_rows + 1
+        @scroll_offsets[@current_view] = scroll_offset
+      end
+
+      queue_name = @selected_queue || "unknown"
+      scroll_indicator = jobs.length > data_rows ? " [#{scroll_offset + 1}-#{[scroll_offset + data_rows, jobs.length].min}/#{jobs.length}]" : ""
+      lines << section_bar("Queue: #{queue_name}#{scroll_indicator} - ↑↓ select, ^X=delete, Esc=back")
+
+      if jobs.empty?
+        lines << @pastel.dim("  No jobs in queue")
+        return lines.join("\n")
+      end
+
+      job_width = [35, (width - 50) / 2].max
+      args_width = [35, (width - 50) / 2].max
+
+      header = sprintf("  %-#{job_width}s %-20s %-#{args_width}s", "JOB", "ENQUEUED", "ARGS")
+      lines << format_table_header(header)
+
+      jobs.drop(scroll_offset).first(data_rows).each_with_index do |job, idx|
+        actual_idx = scroll_offset + idx
+        klass = truncate(job[:class].to_s, job_width)
+        enqueued = job[:enqueued_at]&.strftime("%Y-%m-%d %H:%M:%S") || "N/A"
+        args = truncate(job[:args].inspect, args_width)
+
+        row = sprintf("  %-#{job_width}s %-20s %-#{args_width}s", klass, enqueued, args)
+
+        if actual_idx == selected
+          lines << @pastel.black.on_white(row + " " * [width - visible_string_length(row), 0].max)
+        else
+          lines << row
+        end
+      end
+
+      remaining = jobs.length - scroll_offset - data_rows
+      if remaining > 0
+        lines << @pastel.dim("  ↓ #{remaining} more")
+      end
+
+      # Status message
+      if @status_message && @status_time && (Time.now - @status_time) < 3
+        lines << @pastel.green("  #{@status_message}")
       end
 
       lines.join("\n")
@@ -1083,31 +1242,36 @@ module Sktop
     end
 
     def function_bar
-      items = if @current_view == :main
-        [
-          ["q", "Queues"],
-          ["p", "Procs"],
-          ["w", "Workers"],
-          ["r", "Retries"],
-          ["s", "Sched"],
-          ["d", "Dead"],
-          ["^C", "Quit"]
-        ]
-      else
-        [
-          ["m", "Main"],
-          ["q", "Queues"],
-          ["p", "Procs"],
-          ["w", "Workers"],
-          ["r", "Retries"],
-          ["s", "Sched"],
-          ["d", "Dead"],
-          ["^C", "Quit"]
-        ]
-      end
+      # Map keys to views for highlighting
+      view_keys = {
+        "m" => :main,
+        "q" => :queues,
+        "p" => :processes,
+        "w" => :workers,
+        "r" => :retries,
+        "s" => :scheduled,
+        "d" => :dead
+      }
+
+      items = [
+        ["m", "Main"],
+        ["q", "Queues"],
+        ["p", "Procs"],
+        ["w", "Workers"],
+        ["r", "Retries"],
+        ["s", "Sched"],
+        ["d", "Dead"],
+        ["^C", "Quit"]
+      ]
 
       bar = items.map do |key, label|
-        @pastel.black.on_cyan.bold(key) + @pastel.white.on_blue(label)
+        view = view_keys[key]
+        if view && view == @current_view
+          # Highlight current view with inverted colors
+          @pastel.black.on_white.bold(key) + @pastel.black.on_green.bold(label)
+        else
+          @pastel.black.on_cyan.bold(key) + @pastel.white.on_blue(label)
+        end
       end.join(" ")
 
       width = terminal_width

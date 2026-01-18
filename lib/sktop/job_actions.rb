@@ -41,6 +41,15 @@ module Sktop
         count
       end
 
+      def delete_queue_job(queue_name, jid)
+        queue = Sidekiq::Queue.new(queue_name)
+        job = queue.find { |j| j.jid == jid }
+        raise "Job not found in queue #{queue_name} (JID: #{jid})" unless job
+
+        job.delete
+        true
+      end
+
       def quiet_process(identity)
         process = find_process(identity)
         raise "Process not found (identity: #{identity})" unless process

@@ -352,8 +352,10 @@ module Sktop
       lines = []
       lines << header_bar
       lines << ""
-      # Calculate available rows: height - header(1) - blank(1) - section(1) - table_header(1) - footer(1) = height - 5
-      max_rows = terminal_height - 5
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      # Calculate available rows: height - header(1) - blank(1) - stats(6) - blank(1) - section(1) - table_header(1) - footer(1) = height - 12
+      max_rows = terminal_height - 12
       queues_selectable(collector.queues, max_rows).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines
@@ -363,7 +365,9 @@ module Sktop
       lines = []
       lines << header_bar
       lines << ""
-      max_rows = terminal_height - 5
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
       jobs = collector.respond_to?(:queue_jobs_cache) ? collector.queue_jobs_cache : []
       queue_jobs_selectable(jobs, max_rows).each_line(chomp: true) { |l| lines << l }
       lines << :footer
@@ -374,7 +378,9 @@ module Sktop
       lines = []
       lines << header_bar
       lines << ""
-      max_rows = terminal_height - 5
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
       processes_selectable(collector.processes, max_rows).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines
@@ -384,7 +390,9 @@ module Sktop
       lines = []
       lines << header_bar
       lines << ""
-      max_rows = terminal_height - 5
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
       workers_section(collector.workers, max_rows: max_rows, scrollable: true).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines
@@ -394,7 +402,9 @@ module Sktop
       lines = []
       lines << header_bar
       lines << ""
-      max_rows = terminal_height - 5
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
       retries_scrollable(collector.retry_jobs(limit: 500), max_rows).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines
@@ -404,7 +414,9 @@ module Sktop
       lines = []
       lines << header_bar
       lines << ""
-      max_rows = terminal_height - 5
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
       scheduled_scrollable(collector.scheduled_jobs(limit: 500), max_rows).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines
@@ -414,7 +426,9 @@ module Sktop
       lines = []
       lines << header_bar
       lines << ""
-      max_rows = terminal_height - 5
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
       dead_scrollable(collector.dead_jobs(limit: 500), max_rows).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines

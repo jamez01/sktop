@@ -291,17 +291,23 @@ module Sktop
     end
 
     # Check if Sidekiq Enterprise is loaded.
+    # Uses Sidekiq.ent? method if available, falls back to constant check.
     #
     # @return [Boolean] true if Enterprise features are available
     def enterprise?
-      defined?(Sidekiq::Enterprise)
+      return Sidekiq.ent? if Sidekiq.respond_to?(:ent?)
+
+      defined?(Sidekiq::Enterprise) && true
     end
 
     # Check if Sidekiq Pro is loaded.
+    # Uses Sidekiq.pro? method if available, falls back to constant check.
     #
     # @return [Boolean] true if Pro features are available
     def pro?
-      defined?(Sidekiq::Pro) || enterprise?
+      return Sidekiq.pro? if Sidekiq.respond_to?(:pro?)
+
+      enterprise? || (defined?(Sidekiq::Pro) && true)
     end
 
     # Get the Sidekiq edition name.

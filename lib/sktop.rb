@@ -2,6 +2,21 @@
 
 require "sidekiq"
 require "sidekiq/api"
+
+# Try to load Sidekiq Pro and Enterprise if available
+# These provide additional features like batches and periodic jobs
+begin
+  require "sidekiq-pro"
+rescue LoadError
+  # Sidekiq Pro not available
+end
+
+begin
+  require "sidekiq-ent"
+rescue LoadError
+  # Sidekiq Enterprise not available
+end
+
 require "terminal-table"
 require "pastel"
 require "tty-cursor"

@@ -316,6 +316,8 @@ module Sktop
     def render_cached_data
       data = @data_mutex.synchronize { @cached_data }
       if data
+        # Update edition so display knows which views to show
+        @display.edition = data[:edition] || "OSS"
         @display.render_refresh_from_cache(data)
       else
         @display.render_loading

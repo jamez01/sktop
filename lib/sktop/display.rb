@@ -16,7 +16,8 @@ module Sktop
     # @return [Symbol] the current view (:main, :queues, :processes, :workers, :retries, :scheduled, :dead, :queue_jobs)
     # @return [Symbol] the connection status (:connecting, :connected, :updating, :error)
     # @return [Time, nil] the timestamp of the last successful data update
-    attr_accessor :current_view, :connection_status, :last_update
+    # @return [String] the Sidekiq edition ("OSS", "Pro", or "Enterprise")
+    attr_accessor :current_view, :connection_status, :last_update, :edition
 
     # Create a new Display instance with default settings.
     def initialize
@@ -31,6 +32,7 @@ module Sktop
       @connection_status = :connecting  # :connecting, :connected, :updating, :error
       @last_update = nil
       @selected_queue = nil  # Track which queue is being viewed in queue_jobs view
+      @edition = "OSS"  # Default to OSS, updated when data is fetched
     end
 
     # @return [String, nil] the name of the currently selected queue (for queue_jobs view)
@@ -134,23 +136,46 @@ module Sktop
       # Don't reset scroll when switching views - preserve position
     end
 
-    # Ordered list of views for cycling with arrow keys.
-    # Enterprise/Pro views (batches, periodic) are at the end.
+    # Base views available in all editions.
+    # @return [Array<Symbol>] the base view order
+    BASE_VIEWS = [:main, :queues, :processes, :workers, :retries, :scheduled, :dead].freeze
+
+    # Get the ordered list of views for cycling with arrow keys.
+    # Includes Pro/Enterprise views only if those editions are available.
     # @return [Array<Symbol>] the view order
-    VIEW_ORDER = [:main, :queues, :processes, :workers, :retries, :scheduled, :dead, :batches, :periodic].freeze
+    def view_order
+      views = BASE_VIEWS.dup
+      views << :batches if pro_available?
+      views << :periodic if enterprise_available?
+      views
+    end
+
+    # Check if Pro features are available.
+    # @return [Boolean]
+    def pro_available?
+      %w[Pro Enterprise].include?(@edition)
+    end
+
+    # Check if Enterprise features are available.
+    # @return [Boolean]
+    def enterprise_available?
+      @edition == "Enterprise"
+    end
 
     # Switch to the next view in the cycle.
     # @return [Symbol] the new current view
     def next_view
-      current_idx = VIEW_ORDER.index(@current_view) || 0
-      @current_view = VIEW_ORDER[(current_idx + 1) % VIEW_ORDER.length]
+      views = view_order
+      current_idx = views.index(@current_view) || 0
+      @current_view = views[(current_idx + 1) % views.length]
     end
 
     # Switch to the previous view in the cycle.
     # @return [Symbol] the new current view
     def previous_view
-      current_idx = VIEW_ORDER.index(@current_view) || 0
-      @current_view = VIEW_ORDER[(current_idx - 1) % VIEW_ORDER.length]
+      views = view_order
+      current_idx = views.index(@current_view) || 0
+      @current_view = views[(current_idx - 1) % views.length]
     end
 
     # Reset cursor to top-left and hide it.
@@ -1551,11 +1576,13 @@ module Sktop
         ["w", "Workers"],
         ["r", "Retries"],
         ["s", "Sched"],
-        ["d", "Dead"],
-        ["b", "Batch"],
-        ["c", "Cron"],
-        ["^C", "Quit"]
+        ["d", "Dead"]
       ]
+
+      # Only show Pro/Enterprise views if available
+      items << ["b", "Batch"] if pro_available?
+      items << ["c", "Cron"] if enterprise_available?
+      items << ["^C", "Quit"]
 
       bar = items.map do |key, label|
         view = view_keys[key]

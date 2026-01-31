@@ -25,4 +25,30 @@ Gem::Specification.new do |spec|
   spec.add_dependency "pastel", "~> 0.8"
   spec.add_dependency "tty-cursor", "~> 0.7"
   spec.add_dependency "tty-screen", "~> 0.8"
+
+  spec.post_install_message = <<~MSG
+
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║                     sktop installed successfully!                ║
+    ╠══════════════════════════════════════════════════════════════════╣
+    ║  Sidekiq Pro/Enterprise Support (Optional)                       ║
+    ║  ──────────────────────────────────────────                      ║
+    ║  To enable Batches and Periodic Jobs views, install the          ║
+    ║  commercial Sidekiq gems:                                        ║
+    ║                                                                  ║
+    ║  # Configure credentials (one-time setup)                        ║
+    ║  export BUNDLE_ENTERPRISE__CONTRIBSYS__COM=YOUR_LICENSE_KEY      ║
+    ║                                                                  ║
+    ║  # Install Pro (for Batches)                                     ║
+    ║  gem install sidekiq-pro \\                                       ║
+    ║    --source https://enterprise.contribsys.com/                   ║
+    ║                                                                  ║
+    ║  # Install Enterprise (for Batches + Periodic Jobs)              ║
+    ║  gem install sidekiq-ent \\                                       ║
+    ║    --source https://enterprise.contribsys.com/                   ║
+    ║                                                                  ║
+    ║  More info: https://sidekiq.org                                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+
+  MSG
 end

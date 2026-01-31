@@ -71,7 +71,7 @@ module Sktop
     # Check if the current view supports item selection.
     # @return [Boolean] true if the view supports selection
     def selectable_view?
-      [:queues, :queue_jobs, :processes, :retries, :dead].include?(@current_view)
+      [:queues, :queue_jobs, :processes, :retries, :dead, :batches].include?(@current_view)
     end
 
     # Move up by one page in the current view.
@@ -135,8 +135,9 @@ module Sktop
     end
 
     # Ordered list of views for cycling with arrow keys.
+    # Enterprise/Pro views (batches, periodic) are at the end.
     # @return [Array<Symbol>] the view order
-    VIEW_ORDER = [:main, :queues, :processes, :workers, :retries, :scheduled, :dead].freeze
+    VIEW_ORDER = [:main, :queues, :processes, :workers, :retries, :scheduled, :dead, :batches, :periodic].freeze
 
     # Switch to the next view in the cycle.
     # @return [Symbol] the new current view
@@ -274,6 +275,31 @@ module Sktop
       def queue_jobs_cache
         @data[:queue_jobs] || []
       end
+
+      # @return [Array<Hash>] batch information (Pro/Enterprise)
+      def batches
+        @data[:batches] || []
+      end
+
+      # @return [Array<Hash>] periodic job information (Enterprise)
+      def periodic_jobs
+        @data[:periodic_jobs] || []
+      end
+
+      # @return [String] Sidekiq edition ("Enterprise", "Pro", or "OSS")
+      def edition
+        @data[:edition] || "OSS"
+      end
+
+      # @return [Boolean] true if Pro features available
+      def pro?
+        %w[Pro Enterprise].include?(edition)
+      end
+
+      # @return [Boolean] true if Enterprise features available
+      def enterprise?
+        edition == "Enterprise"
+      end
     end
 
     private
@@ -294,6 +320,10 @@ module Sktop
         build_scheduled_detail(collector)
       when :dead
         build_dead_detail(collector)
+      when :batches
+        build_batches_detail(collector)
+      when :periodic
+        build_periodic_detail(collector)
       else
         build_main_view(collector)
       end
@@ -430,6 +460,30 @@ module Sktop
       lines << ""
       max_rows = terminal_height - 12
       dead_scrollable(collector.dead_jobs(limit: 500), max_rows).each_line(chomp: true) { |l| lines << l }
+      lines << :footer
+      lines
+    end
+
+    def build_batches_detail(collector)
+      lines = []
+      lines << header_bar
+      lines << ""
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
+      batches_selectable(collector.batches, max_rows, collector.pro?).each_line(chomp: true) { |l| lines << l }
+      lines << :footer
+      lines
+    end
+
+    def build_periodic_detail(collector)
+      lines = []
+      lines << header_bar
+      lines << ""
+      stats_meters(collector.overview, collector.processes).each_line(chomp: true) { |l| lines << l }
+      lines << ""
+      max_rows = terminal_height - 12
+      periodic_scrollable(collector.periodic_jobs, max_rows, collector.enterprise?).each_line(chomp: true) { |l| lines << l }
       lines << :footer
       lines
     end
@@ -1343,6 +1397,139 @@ module Sktop
       lines.join("\n")
     end
 
+    # Selectable batches view (Pro/Enterprise)
+    def batches_selectable(batches, max_rows, pro_available)
+      width = terminal_width
+      lines = []
+
+      unless pro_available
+        lines << section_bar("Batches - Requires Sidekiq Pro or Enterprise")
+        lines << @pastel.dim("  Sidekiq Pro or Enterprise is required for batch support.")
+        lines << @pastel.dim("  Visit https://sidekiq.org for more information.")
+        return lines.join("\n")
+      end
+
+      scroll_offset = @scroll_offsets[@current_view]
+      data_rows = max_rows - 3
+      max_scroll = [batches.length - data_rows, 0].max
+      scroll_offset = [[scroll_offset, 0].max, max_scroll].min
+      @scroll_offsets[@current_view] = scroll_offset
+
+      @selected_index[@current_view] = [[@selected_index[@current_view], 0].max, [batches.length - 1, 0].max].min
+
+      selected = @selected_index[@current_view]
+      if selected < scroll_offset
+        scroll_offset = selected
+        @scroll_offsets[@current_view] = scroll_offset
+      elsif selected >= scroll_offset + data_rows
+        scroll_offset = selected - data_rows + 1
+        @scroll_offsets[@current_view] = scroll_offset
+      end
+
+      scroll_indicator = batches.length > data_rows ? " [#{scroll_offset + 1}-#{[scroll_offset + data_rows, batches.length].min}/#{batches.length}]" : ""
+      lines << section_bar("Batches#{scroll_indicator} - ↑↓ select, m=main")
+
+      if batches.empty?
+        lines << @pastel.dim("  No active batches")
+        return lines.join("\n")
+      end
+
+      desc_width = [30, (width - 70) / 2].max
+      bid_width = 24
+
+      header = sprintf("  %-#{bid_width}s %-#{desc_width}s %8s %8s %8s %10s", "BID", "DESCRIPTION", "TOTAL", "PENDING", "FAILED", "STATUS")
+      lines << format_table_header(header)
+
+      batches.drop(scroll_offset).first(data_rows).each_with_index do |batch, idx|
+        actual_idx = scroll_offset + idx
+        bid = truncate(batch[:bid], bid_width)
+        desc = truncate(batch[:description] || "(no description)", desc_width)
+        total = batch[:total].to_s
+        pending = batch[:pending].to_s
+        failures = batch[:failures].to_s
+        status = batch[:complete] ? "COMPLETE" : "RUNNING"
+
+        pending_colored = batch[:pending] > 0 ? @pastel.yellow(sprintf("%8s", pending)) : sprintf("%8s", pending)
+        failures_colored = batch[:failures] > 0 ? @pastel.red(sprintf("%8s", failures)) : sprintf("%8s", failures)
+        status_colored = batch[:complete] ? @pastel.green(sprintf("%10s", status)) : @pastel.cyan(sprintf("%10s", status))
+
+        row = sprintf("  %-#{bid_width}s %-#{desc_width}s %8s %s %s %s", bid, desc, total, pending_colored, failures_colored, status_colored)
+
+        if actual_idx == selected
+          lines << @pastel.black.on_white(row + " " * [width - visible_string_length(row), 0].max)
+        else
+          lines << row
+        end
+      end
+
+      remaining = batches.length - scroll_offset - data_rows
+      if remaining > 0
+        lines << @pastel.dim("  ↓ #{remaining} more")
+      end
+
+      if @status_message && @status_time && (Time.now - @status_time) < 3
+        lines << @pastel.green("  #{@status_message}")
+      end
+
+      lines.join("\n")
+    end
+
+    # Scrollable periodic jobs view (Enterprise)
+    def periodic_scrollable(jobs, max_rows, enterprise_available)
+      width = terminal_width
+      lines = []
+
+      unless enterprise_available
+        lines << section_bar("Periodic Jobs - Requires Sidekiq Enterprise")
+        lines << @pastel.dim("  Sidekiq Enterprise is required for periodic job support.")
+        lines << @pastel.dim("  Visit https://sidekiq.org for more information.")
+        return lines.join("\n")
+      end
+
+      scroll_offset = @scroll_offsets[@current_view]
+      data_rows = max_rows - 2
+      max_scroll = [jobs.length - data_rows, 0].max
+      scroll_offset = [[scroll_offset, 0].max, max_scroll].min
+      @scroll_offsets[@current_view] = scroll_offset
+
+      scroll_indicator = jobs.length > data_rows ? " [#{scroll_offset + 1}-#{[scroll_offset + data_rows, jobs.length].min}/#{jobs.length}]" : ""
+      lines << section_bar("Periodic Jobs#{scroll_indicator} - ↑↓ to scroll, m=main")
+
+      if jobs.empty?
+        lines << @pastel.dim("  No periodic jobs configured")
+        return lines.join("\n")
+      end
+
+      klass_width = [40, (width - 50) / 2].max
+      schedule_width = 20
+      queue_width = 15
+
+      header = sprintf("  %-#{klass_width}s %-#{schedule_width}s %-#{queue_width}s %s", "JOB CLASS", "SCHEDULE", "QUEUE", "LAST RUN")
+      lines << format_table_header(header)
+
+      jobs.drop(scroll_offset).first(data_rows).each do |job|
+        klass = truncate(job[:klass], klass_width)
+        schedule = truncate(job[:schedule], schedule_width)
+        queue = truncate(job[:options]["queue"] || "default", queue_width)
+        last_run = if job[:history].any?
+                     last = job[:history].first
+                     last.is_a?(Hash) ? (last["enqueued_at"] || "N/A") : last.to_s
+                   else
+                     "Never"
+                   end
+        last_run = truncate(last_run.to_s, 20)
+
+        lines << sprintf("  %-#{klass_width}s %-#{schedule_width}s %-#{queue_width}s %s", klass, @pastel.cyan(schedule), queue, last_run)
+      end
+
+      remaining = jobs.length - scroll_offset - data_rows
+      if remaining > 0
+        lines << @pastel.dim("  ↓ #{remaining} more")
+      end
+
+      lines.join("\n")
+    end
+
     def function_bar
       # Map keys to views for highlighting
       view_keys = {
@@ -1352,7 +1539,9 @@ module Sktop
         "w" => :workers,
         "r" => :retries,
         "s" => :scheduled,
-        "d" => :dead
+        "d" => :dead,
+        "b" => :batches,
+        "c" => :periodic
       }
 
       items = [
@@ -1363,6 +1552,8 @@ module Sktop
         ["r", "Retries"],
         ["s", "Sched"],
         ["d", "Dead"],
+        ["b", "Batch"],
+        ["c", "Cron"],
         ["^C", "Quit"]
       ]
 

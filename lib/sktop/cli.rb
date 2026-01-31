@@ -120,6 +120,14 @@ module Sktop
           @options[:initial_view] = :dead
         end
 
+        opts.on("-b", "--batches", "Batches view (Pro/Enterprise)") do
+          @options[:initial_view] = :batches
+        end
+
+        opts.on("-c", "--cron", "Periodic/Cron jobs view (Enterprise)") do
+          @options[:initial_view] = :periodic
+        end
+
         opts.separator ""
 
         opts.on("-1", "--once", "Display once and exit (no auto-refresh)") do
@@ -223,7 +231,11 @@ module Sktop
               workers: collector.workers,
               retry_jobs: collector.retry_jobs(limit: 500),
               scheduled_jobs: collector.scheduled_jobs(limit: 500),
-              dead_jobs: collector.dead_jobs(limit: 500)
+              dead_jobs: collector.dead_jobs(limit: 500),
+              # Enterprise/Pro features
+              edition: collector.edition,
+              batches: collector.batches(limit: 500),
+              periodic_jobs: collector.periodic_jobs
             }
 
             # If viewing queue jobs, refresh that data too
@@ -331,6 +343,10 @@ module Sktop
         @display.current_view = :scheduled
       when 'd', 'D'
         @display.current_view = :dead
+      when 'b', 'B'
+        @display.current_view = :batches
+      when 'c', 'C'
+        @display.current_view = :periodic
       when 'm', 'M'
         @display.current_view = :main
       when "\r", "\n"  # Enter key

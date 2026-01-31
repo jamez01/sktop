@@ -289,5 +289,109 @@ module Sktop
         failed: stats_history.failed
       }
     end
+
+    # Check if Sidekiq Enterprise is loaded.
+    #
+    # @return [Boolean] true if Enterprise features are available
+    def enterprise?
+      defined?(Sidekiq::Enterprise)
+    end
+
+    # Check if Sidekiq Pro is loaded.
+    #
+    # @return [Boolean] true if Pro features are available
+    def pro?
+      defined?(Sidekiq::Pro) || enterprise?
+    end
+
+    # Get the Sidekiq edition name.
+    #
+    # @return [String] "Enterprise", "Pro", or "OSS"
+    def edition
+      if enterprise?
+        "Enterprise"
+      elsif pro?
+        "Pro"
+      else
+        "OSS"
+      end
+    end
+
+    # Get information about active batches (requires Sidekiq Pro or Enterprise).
+    #
+    # @param limit [Integer] maximum number of batches to return (default: 50)
+    # @return [Array<Hash>] array of batch information hashes
+    # @option return [String] :bid the batch ID
+    # @option return [String, nil] :description batch description
+    # @option return [Integer] :total total jobs in batch
+    # @option return [Integer] :pending jobs not yet completed
+    # @option return [Integer] :failures failed jobs
+    # @option return [Time, nil] :created_at when the batch was created
+    # @option return [Boolean] :complete whether all jobs have run
+    # @return [Array] empty array if Pro/Enterprise not available
+    def batches(limit: 50)
+      return [] unless pro? && defined?(Sidekiq::BatchSet)
+
+      Sidekiq::BatchSet.new.first(limit).map do |status|
+        {
+          bid: status.bid,
+          description: status.description,
+          total: status.total,
+          pending: status.pending,
+          failures: status.failures,
+          created_at: status.created_at,
+          complete: status.complete?
+        }
+      end
+    rescue StandardError
+      []
+    end
+
+    # Get information about periodic jobs (requires Sidekiq Enterprise).
+    #
+    # @return [Array<Hash>] array of periodic job information hashes
+    # @option return [String] :lid the loop identifier
+    # @option return [String] :schedule the cron expression
+    # @option return [String] :klass the worker class name
+    # @option return [Hash] :options job options (queue, retry, etc.)
+    # @option return [Array] :history recent execution history
+    # @return [Array] empty array if Enterprise not available
+    def periodic_jobs
+      return [] unless enterprise? && defined?(Sidekiq::Periodic::LoopSet)
+
+      Sidekiq::Periodic::LoopSet.new.map do |lop|
+        {
+          lid: lop.lid,
+          schedule: lop.schedule,
+          klass: lop.klass,
+          options: lop.options || {},
+          history: lop.history || []
+        }
+      end
+    rescue StandardError
+      []
+    end
+
+    # Get the total count of active batches (requires Sidekiq Pro or Enterprise).
+    #
+    # @return [Integer] number of active batches, or 0 if not available
+    def batch_count
+      return 0 unless pro? && defined?(Sidekiq::BatchSet)
+
+      Sidekiq::BatchSet.new.size
+    rescue StandardError
+      0
+    end
+
+    # Get the count of periodic jobs (requires Sidekiq Enterprise).
+    #
+    # @return [Integer] number of periodic jobs, or 0 if not available
+    def periodic_count
+      return 0 unless enterprise? && defined?(Sidekiq::Periodic::LoopSet)
+
+      Sidekiq::Periodic::LoopSet.new.size
+    rescue StandardError
+      0
+    end
   end
 end
